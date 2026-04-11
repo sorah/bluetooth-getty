@@ -1,0 +1,8 @@
+# Tell ModemManager to leave rfcomm ttys alone — it would otherwise
+# probe each one with AT commands as soon as it appears, which is
+# pointless for an SPP login session and can confuse the peer.
+#
+# We deliberately do not TAG+="systemd" here: bluetooth-getty manages
+# the rfcomm-getty@.service lifecycle directly (no BindsTo), so we do
+# not need dev-rfcommN.device units to materialize.
+SUBSYSTEM=="tty", KERNEL=="rfcomm[0-9]*", ENV{ID_MM_DEVICE_IGNORE}="1"

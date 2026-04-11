@@ -1,0 +1,47 @@
+[Unit]
+Description=Getty on RFCOMM tty %I
+Documentation=man:agetty(8)
+Documentation=https://github.com/sorah/bluetooth-getty
+# Deliberately no BindsTo= / After=dev-%i.device. Lifecycle is owned
+# by the bluetooth-getty daemon: it primes /dev/rfcommN via open()
+# before calling StartUnit (so the device exists when agetty opens
+# it), and it explicitly calls StopUnit in Profile1.RequestDisconnection
+# when the peer disconnects. Relying on dev-%i.device was fragile
+# because systemd's device unit is only created when udev tags the
+# device with TAG+="systemd", which in practice was intermittent.
+After=systemd-user-sessions.service
+IgnoreOnIsolate=yes
+Conflicts=rescue.service
+
+[Service]
+# Mirrors the upstream serial-getty@.service ExecStart. `-o '-p -- \u'`
+# makes agetty invoke login with environment preservation (-p) and pass
+# the entered username (\u) as the only positional argument, past a
+# literal `--` to stop login from eating future options.
+ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud 115200,57600,38400,9600 - $TERM
+Type=idle
+# One login session per RFCOMM connection. After the user logs out
+# the kernel hangs up the session's controlling terminal, which sets
+# TTY_IO_ERROR on the shared tty_struct. We can't clear that without
+# dropping our own hold, and dropping our hold triggers tty_port_shutdown
+# in the rfcomm driver which closes the DLC. So respawning agetty
+# on the same tty would immediately see EIO and fail. Instead, stay
+# stopped until the peer reconnects, which yields a fresh NewConnection
+# → fresh rfcomm_dev → fresh tty_struct.
+Restart=no
+UtmpIdentifier=%I
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/%I
+TTYReset=yes
+# Deliberately NOT TTYVHangup=yes: serial-getty@.service sets it to
+# reset the tty line before exec'ing agetty, but for an rfcomm tty
+# created with RFCOMM_RELEASE_ONHUP the vhangup() call triggers the
+# kernel's hangup callback, which then runs rfcomm_dev_del() and
+# destroys /dev/rfcommN before agetty can open it. The peer sees no
+# login prompt. Skipping the vhangup is safe here because the tty is
+# freshly-created per connection and has no stale state to reset.
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+ImportCredential=agetty.*
+ImportCredential=login.*

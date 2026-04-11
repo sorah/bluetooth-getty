@@ -1,0 +1,71 @@
+[Unit]
+Description=Bluetooth getty (SPP -> serial-getty@)
+After=bluetooth.service dbus.service
+Requires=bluetooth.service
+PartOf=bluetooth.service
+
+[Service]
+Type=dbus
+BusName=jp.sorah.BluetoothGetty
+ExecStart=/usr/local/bin/bluetooth-getty
+Restart=on-failure
+RestartSec=2s
+
+# --- Runtime identity ---
+# Must run as root: owning the D-Bus well-known name requires the policy
+# under dbus/jp.sorah.BluetoothGetty.conf (root-only), and StartUnit on
+# serial-getty@* also wants root to bypass polkit.
+User=root
+Group=root
+
+# --- Capabilities ---
+# CAP_NET_ADMIN — kernel rfcomm_create_dev/release_dev ioctls check for it.
+# CAP_NET_RAW   — socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_RFCOMM) used as a
+#                 control fd inside release_tty(). __sock_create enforces
+#                 CAP_NET_RAW for any SOCK_RAW family.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+
+# --- Address families ---
+# UNIX for the D-Bus system bus socket, BLUETOOTH for everything else.
+# No IP-family sockets are needed — the daemon never touches the network.
+RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH
+IPAddressDeny=any
+
+# --- Filesystem ---
+# Daemon writes nothing and reads no user data. Do NOT enable
+# PrivateDevices — it gives the service its own minimal /dev that only
+# contains pseudo devices (null, zero, random, ...), and new
+# /dev/rfcommN nodes created by udev in the host /dev never propagate
+# into that private mount. We need a real /dev/rfcommN to open() in
+# NewConnection as the tty-layer anchor (cf. bluez tools/rfcomm.c:508).
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# --- Process / misc ---
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+KeyringMode=private
+
+# Do NOT set PrivateNetwork=yes — AF_BLUETOOTH sockets live in the host
+# network namespace and we would lose access to the Bluetooth stack.
+
+[Install]
+WantedBy=bluetooth.target
