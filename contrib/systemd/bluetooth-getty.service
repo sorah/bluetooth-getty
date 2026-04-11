@@ -1,5 +1,5 @@
 [Unit]
-Description=Bluetooth getty (SPP -> serial-getty@)
+Description=Bluetooth getty (SPP -> bluetooth-getty-session@)
 After=bluetooth.service dbus.service
 Requires=bluetooth.service
 PartOf=bluetooth.service
@@ -7,14 +7,14 @@ PartOf=bluetooth.service
 [Service]
 Type=dbus
 BusName=jp.sorah.BluetoothGetty
-ExecStart=/usr/local/bin/bluetooth-getty
+ExecStart=/usr/sbin/bluetooth-getty
 Restart=on-failure
 RestartSec=2s
 
 # --- Runtime identity ---
 # Must run as root: owning the D-Bus well-known name requires the policy
-# under dbus/jp.sorah.BluetoothGetty.conf (root-only), and StartUnit on
-# serial-getty@* also wants root to bypass polkit.
+# under jp.sorah.BluetoothGetty.conf (root-only), and StartUnit on
+# bluetooth-getty-session@* also wants root to bypass polkit.
 User=root
 Group=root
 

@@ -1,6 +1,6 @@
-# bluetooth-getty
+# bluetooth-getty: Spawn agetty on systemd for Bluetooth SPP
 
-A small t daemon that exposes a Bluetooth Serial Port Profile (SPP) and
+A small daemon that exposes a Bluetooth Serial Port Profile (SPP) and
 attaches an interactive login prompt to each incoming RFCOMM connection by
 handing the session off to systemd's `serial-getty@.service` template.
 
@@ -54,44 +54,71 @@ The binary lands at `target/release/bluetooth-getty`.
 
 ## Install
 
+### Debian / Ubuntu (.deb)
+
 ```sh
-sudo install -m 0755 target/release/bluetooth-getty /usr/local/bin/
-sudo install -m 0644 units/bluetooth-getty.service /etc/systemd/system/
-sudo install -m 0644 units/rfcomm-getty@.service /etc/systemd/system/
-sudo install -m 0644 dbus/jp.sorah.BluetoothGetty.conf /etc/dbus-1/system.d/
-sudo install -m 0644 udev/99-bluetooth-getty.rules /etc/udev/rules.d/
+cargo install cargo-deb           # one-time
+cargo deb                         # produces target/debian/bluetooth-getty_*.deb
+sudo dpkg -i target/debian/bluetooth-getty_*.deb
+sudo systemctl enable --now bluetooth-getty.service
+```
+
+The package drops the binary at `/usr/sbin/bluetooth-getty` and ships
+all the ancillary config fragments into the standard vendor locations:
+
+| File | Destination |
+|---|---|
+| `contrib/systemd/bluetooth-getty.service` | `/lib/systemd/system/bluetooth-getty.service` |
+| `contrib/systemd/bluetooth-getty-session@.service` | `/lib/systemd/system/bluetooth-getty-session@.service` |
+| `contrib/udev/99-bluetooth-getty.rules` | `/lib/udev/rules.d/99-bluetooth-getty.rules` |
+| `contrib/dbus/jp.sorah.BluetoothGetty.conf` | `/usr/share/dbus-1/system.d/jp.sorah.BluetoothGetty.conf` |
+
+`cargo-deb` wires up `systemctl daemon-reload` automatically on
+install/upgrade and the package's own postinst runs `udevadm control
+--reload-rules`. The daemon is intentionally **not** auto-enabled on
+install — review the D-Bus policy and udev rule first, then run
+`systemctl enable --now bluetooth-getty.service` yourself.
+
+### Manual install (non-Debian)
+
+```sh
+sudo install -m 0755 target/release/bluetooth-getty /usr/local/sbin/
+sudo install -m 0644 contrib/systemd/bluetooth-getty.service /etc/systemd/system/
+sudo install -m 0644 contrib/systemd/bluetooth-getty-session@.service /etc/systemd/system/
+sudo install -m 0644 contrib/dbus/jp.sorah.BluetoothGetty.conf /etc/dbus-1/system.d/
+sudo install -m 0644 contrib/udev/99-bluetooth-getty.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo systemctl reload dbus
 sudo systemctl daemon-reload
 sudo systemctl enable --now bluetooth-getty.service
 ```
 
+If you install the binary somewhere other than `/usr/sbin`, update
+`ExecStart=` in `bluetooth-getty.service` accordingly.
+
+### What gets installed
+
 Two systemd unit files are shipped:
 
 - `bluetooth-getty.service` — the daemon itself.
-- `rfcomm-getty@.service` — a per-connection template instantiated by
-  the daemon (via `Manager.StartUnit`) for each incoming connection,
-  used in place of `serial-getty@.service`. It's a near-copy of the
-  upstream serial-getty template with `TTYVHangup=yes` removed,
-  because that directive calls `vhangup()` before exec'ing agetty,
-  which for an rfcomm tty created with `RFCOMM_RELEASE_ONHUP` tears
-  down the device node before agetty can open it.
+- `bluetooth-getty-session@.service` — a per-connection template
+  instantiated by the daemon (via `Manager.StartUnit`) for each
+  incoming connection, used in place of `serial-getty@.service`. It's
+  a near-copy of the upstream serial-getty template with
+  `TTYVHangup=yes` removed, because that directive calls `vhangup()`
+  before exec'ing agetty, which on an rfcomm tty puts the driver into
+  a state where agetty can't open it.
 
-Two pieces of system config are required for the daemon to function:
+Two pieces of system config are also required:
 
-- **D-Bus policy** (`dbus/jp.sorah.BluetoothGetty.conf`). Without it the
-  system bus rejects name ownership with `AccessDenied: Connection is
-  not allowed to own the service "jp.sorah.BluetoothGetty"`. It also
-  permits `bluetoothd` to invoke `Profile1` methods on our object.
-- **udev rule** (`udev/99-bluetooth-getty.rules`). systemd's upstream
-  `99-systemd.rules` only adds `TAG+="systemd"` to tty devices whose
-  kernel name starts with `tty` (`ttyS*`, `ttyUSB*`, etc.), not
-  `rfcomm*`. Without this extra rule, `dev-rfcommN.device` never
-  materializes as a systemd device unit and
-  `serial-getty@rfcommN.service` fails with
-  `Job dev-rfcommN.device/start timed out`.
-
-Adjust `ExecStart=` in the unit if you install the binary somewhere else.
+- **D-Bus policy** (`contrib/dbus/jp.sorah.BluetoothGetty.conf`).
+  Without it the system bus rejects name ownership with
+  `AccessDenied: Connection is not allowed to own the service
+  "jp.sorah.BluetoothGetty"`. It also permits `bluetoothd` to invoke
+  `Profile1` methods on our object.
+- **udev rule** (`contrib/udev/99-bluetooth-getty.rules`). Sets
+  `ENV{ID_MM_DEVICE_IGNORE}="1"` on rfcomm ttys so ModemManager doesn't
+  grab them and probe with AT commands when a peer connects.
 
 ## CLI flags
 

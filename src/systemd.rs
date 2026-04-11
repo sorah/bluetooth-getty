@@ -1,5 +1,5 @@
 // org.freedesktop.systemd1.Manager client proxy and helpers for starting,
-// stopping, and watching rfcomm-getty@rfcommN instances.
+// stopping, and watching bluetooth-getty-session@rfcommN instances.
 
 #[zbus::proxy(
     interface = "org.freedesktop.systemd1.Manager",

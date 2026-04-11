@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Reload udev rules so the new /lib/udev/rules.d/99-bluetooth-getty.rules
+# takes effect for subsequent rfcomm device uevents without requiring a
+# reboot. systemd daemon-reload is handled by cargo-deb's auto-generated
+# systemd-units trigger snippet.
+if [ "$1" = "configure" ] && [ -x /bin/udevadm ]; then
+    udevadm control --reload-rules || true
+fi
+
+#DEBHELPER#

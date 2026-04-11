@@ -22,11 +22,11 @@ struct Args {
     object_path: String,
 
     /// Systemd unit template prefix. `rfcommN.service` is appended.
-    /// Defaults to our own `rfcomm-getty@` template, which is a
-    /// near-copy of `serial-getty@.service` without `TTYVHangup=yes`;
-    /// that directive is incompatible with `RFCOMM_RELEASE_ONHUP` and
-    /// would destroy the rfcomm tty before agetty ever opens it.
-    #[arg(long, default_value = "rfcomm-getty@")]
+    /// Defaults to our own `bluetooth-getty-session@` template, which
+    /// is a near-copy of `serial-getty@.service` with `TTYVHangup=yes`
+    /// removed — that directive would destroy the rfcomm tty before
+    /// agetty could open it.
+    #[arg(long, default_value = "bluetooth-getty-session@")]
     unit_template: String,
 
     /// Well-known bus name to request on the system bus.

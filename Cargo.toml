@@ -1,6 +1,13 @@
 [package]
 name = "bluetooth-getty"
 version = "0.1.0"
+authors = ["Sorah Fukumori <her@sorah.jp>"]
+description = "Spawn agetty on systemd for bluez (bluetoothd) SPP connections"
+homepage = "https://github.com/sorah/bluetooth-getty"
+documentation = "https://github.com/sorah/bluetooth-getty"
+repository = "https://github.com/sorah/bluetooth-getty"
+categories = ["development-tools"]
+license = "MIT"
 edition = "2024"
 
 [dependencies]
@@ -13,3 +20,42 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5", features = ["tokio"] }
+
+[profile.deb]
+inherits = "release"
+debug = false
+
+[package.metadata.deb]
+maintainer = "Sorah Fukumori <her@sorah.jp>"
+copyright = "2026 Sorah Fukumori <her@sorah.jp>"
+extended-description = """
+A Rust daemon that registers an SPP profile on BlueZ's modern D-Bus
+ProfileManager1 interface, converts incoming RFCOMM connections into
+/dev/rfcommN tty nodes via RFCOMMCREATEDEV, and launches an instanced
+systemd getty on each one so the peer sees a normal login: prompt.
+Replaces the legacy 'sdptool add SP' + 'rfcomm watch' recipe and lets
+bluetoothd run without --compat.
+"""
+section = "admin"
+priority = "optional"
+depends = "bluez, systemd"
+maintainer-scripts = "contrib/debian"
+# `bluetooth-getty.service` (the daemon, non-template) is installed
+# automatically by cargo-deb's systemd-units scan of `contrib/systemd`
+# below. The templated `bluetooth-getty-session@.service` is NOT
+# picked up by that scan (cargo-deb only handles enableable units, and
+# template units are instantiated, not enabled directly), so we list
+# it explicitly here.
+assets = [
+    ["target/release/bluetooth-getty", "/usr/sbin/bluetooth-getty", "755"],
+    ["contrib/systemd/bluetooth-getty-session@.service", "/usr/lib/systemd/system/bluetooth-getty-session@.service", "644"],
+    ["contrib/udev/99-bluetooth-getty.rules", "/lib/udev/rules.d/99-bluetooth-getty.rules", "644"],
+    ["contrib/dbus/jp.sorah.BluetoothGetty.conf", "/usr/share/dbus-1/system.d/jp.sorah.BluetoothGetty.conf", "644"],
+    ["README.md", "/usr/share/doc/bluetooth-getty/README.md", "644"],
+]
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "contrib/systemd"
+enable = false
+start = false
+restart-after-upgrade = true
