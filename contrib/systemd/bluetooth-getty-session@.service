@@ -14,11 +14,7 @@ IgnoreOnIsolate=yes
 Conflicts=rescue.service
 
 [Service]
-# Mirrors the upstream serial-getty@.service ExecStart. `-o '-p -- \u'`
-# makes agetty invoke login with environment preservation (-p) and pass
-# the entered username (\u) as the only positional argument, past a
-# literal `--` to stop login from eating future options.
-ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud 115200,57600,38400,9600 - $TERM
+ExecStart=-/sbin/agetty --keep-baud 115200,57600,38400,9600 - $TERM
 Type=idle
 # One login session per RFCOMM connection. After the user logs out
 # the kernel hangs up the session's controlling terminal, which sets
