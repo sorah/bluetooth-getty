@@ -1,6 +1,6 @@
 [package]
 name = "bluetooth-getty"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Sorah Fukumori <her@sorah.jp>"]
 description = "Spawn agetty on systemd for bluez (bluetoothd) SPP connections"
 homepage = "https://github.com/sorah/bluetooth-getty"
