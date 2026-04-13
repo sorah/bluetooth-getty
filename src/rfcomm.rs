@@ -3,6 +3,8 @@
 // The canonical REUSE_DLC | RELEASE_ONHUP call pattern lives in
 // bluez/tools/rfcomm.c:491-499.
 
+use std::os::fd::{AsRawFd, FromRawFd};
+
 const AF_BLUETOOTH: libc::c_int = 31;
 const BTPROTO_RFCOMM: libc::c_int = 3;
 
@@ -104,64 +106,57 @@ pub fn create_tty(fd: std::os::fd::RawFd) -> anyhow::Result<i16> {
 //
 // udev may lag the ioctl by a few ms, so retry ENOENT/ENODEV briefly.
 pub fn prime_tty(dev_num: i16) -> anyhow::Result<std::os::fd::OwnedFd> {
-    let path = std::ffi::CString::new(format!("/dev/rfcomm{dev_num}"))
-        .expect("rfcomm device path has no NUL bytes");
+    let path = format!("/dev/rfcomm{dev_num}");
 
-    let raw = {
-        let mut last_err: Option<std::io::Error> = None;
-        let mut opened: libc::c_int = -1;
+    let owned = {
+        let mut last_err: Option<nix::Error> = None;
+        let mut opened: Option<std::os::fd::OwnedFd> = None;
         for attempt in 0..30u32 {
             // O_NONBLOCK on our own open so *we* don't block on DCD.
             // Once CLOCAL is set, later opens from systemd/agetty see
             // the CLOCAL termios and don't block.
-            let r = unsafe {
-                libc::open(
-                    path.as_ptr(),
-                    libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK,
-                )
-            };
-            if r >= 0 {
-                opened = r;
-                break;
-            }
-            let err = std::io::Error::last_os_error();
-            match err.raw_os_error() {
-                Some(libc::ENOENT) | Some(libc::ENODEV) | Some(libc::EACCES) => {
+            match nix::fcntl::open(
+                path.as_str(),
+                nix::fcntl::OFlag::O_RDWR
+                    | nix::fcntl::OFlag::O_NOCTTY
+                    | nix::fcntl::OFlag::O_NONBLOCK,
+                nix::sys::stat::Mode::empty(),
+            ) {
+                Ok(raw_fd) => {
+                    opened = Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) });
+                    break;
+                }
+                Err(
+                    e @ (nix::errno::Errno::ENOENT
+                    | nix::errno::Errno::ENODEV
+                    | nix::errno::Errno::EACCES),
+                ) => {
                     tracing::debug!(
                         dev_num,
                         attempt,
-                        error = %err,
+                        error = %e,
                         "waiting for /dev/rfcomm{dev_num} to appear"
                     );
-                    last_err = Some(err);
+                    last_err = Some(e);
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     continue;
                 }
-                _ => return Err(err.into()),
+                Err(e) => return Err(e.into()),
             }
         }
-        if opened < 0 {
-            return Err(last_err
-                .unwrap_or_else(|| std::io::Error::other("timed out opening rfcomm tty"))
-                .into());
+        match opened {
+            Some(fd) => fd,
+            None => {
+                return Err(last_err
+                    .map(|e| anyhow::anyhow!(e))
+                    .unwrap_or_else(|| anyhow::anyhow!("timed out opening rfcomm tty")));
+            }
         }
-        opened
     };
 
-    // Safety: `raw` is a valid fd we just opened; wrap it in OwnedFd
-    // immediately so any early return through `?` closes it.
-    let owned = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
-
-    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-    let rc = unsafe { libc::tcgetattr(raw, &mut termios) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    termios.c_cflag |= libc::CLOCAL;
-    let rc = unsafe { libc::tcsetattr(raw, libc::TCSANOW, &termios) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
+    let mut termios = nix::sys::termios::tcgetattr(&owned)?;
+    termios.control_flags |= nix::sys::termios::ControlFlags::CLOCAL;
+    nix::sys::termios::tcsetattr(&owned, nix::sys::termios::SetArg::TCSANOW, &termios)?;
 
     Ok(owned)
 }
@@ -175,17 +170,15 @@ pub fn release_tty(dev_id: i16) -> anyhow::Result<()> {
     if ctl < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    // Wrap in OwnedFd immediately so it gets closed on all exit paths.
+    let ctl_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(ctl) };
 
     let req = RfcommDevReq {
         dev_id,
         flags: 1 << RFCOMM_HANGUP_NOW,
         ..RfcommDevReq::default()
     };
-    let ioctl_result = unsafe { rfcomm_release_dev_raw(ctl, &req) };
-    unsafe {
-        libc::close(ctl);
-    }
-    ioctl_result?;
+    unsafe { rfcomm_release_dev_raw(ctl_fd.as_raw_fd(), &req) }?;
     Ok(())
 }
 

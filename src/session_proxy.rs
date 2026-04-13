@@ -10,7 +10,7 @@
 // (src/shared/ptyfwd.c), where EIO on PTY master during vhangup is treated
 // as a transient condition.
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 const BUF_SIZE: usize = 4096;
 
@@ -22,22 +22,19 @@ pub fn run(child_cmd: &[String]) -> anyhow::Result<std::process::ExitCode> {
         anyhow::bail!("session-proxy: no command specified");
     }
 
-    // Block SIGCHLD so we can receive it via signalfd. Also ignore SIGHUP
-    // so we don't die on rfcomm tty hangup events.
-    let mut chld_mask = nix::sys::signal::SigSet::empty();
-    chld_mask.add(nix::sys::signal::Signal::SIGCHLD);
+    // Block SIGCHLD (for signalfd) and SIGHUP (so rfcomm tty hangup
+    // events don't kill us). Both are unblocked in the child after fork.
+    let mut blocked = nix::sys::signal::SigSet::empty();
+    blocked.add(nix::sys::signal::Signal::SIGCHLD);
+    blocked.add(nix::sys::signal::Signal::SIGHUP);
     nix::sys::signal::sigprocmask(
         nix::sys::signal::SigmaskHow::SIG_BLOCK,
-        Some(&chld_mask),
+        Some(&blocked),
         None,
     )?;
-    unsafe {
-        nix::sys::signal::signal(
-            nix::sys::signal::Signal::SIGHUP,
-            nix::sys::signal::SigHandler::SigIgn,
-        )
-    }?;
 
+    let mut chld_mask = nix::sys::signal::SigSet::empty();
+    chld_mask.add(nix::sys::signal::Signal::SIGCHLD);
     let sig_fd = nix::sys::signalfd::SignalFd::with_flags(
         &chld_mask,
         nix::sys::signalfd::SfdFlags::SFD_NONBLOCK | nix::sys::signalfd::SfdFlags::SFD_CLOEXEC,
@@ -46,7 +43,12 @@ pub fn run(child_cmd: &[String]) -> anyhow::Result<std::process::ExitCode> {
     // Read termios and window size from the rfcomm tty (stdin) to propagate
     // to the PTY slave, so agetty's --keep-baud reads the right values.
     let rfcomm_termios = nix::sys::termios::tcgetattr(std::io::stdin())?;
-    let mut ws: nix::pty::Winsize = unsafe { std::mem::zeroed() };
+    let mut ws = nix::pty::Winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     unsafe { tiocgwinsz(libc::STDIN_FILENO, &mut ws) }.ok();
 
     let pty = nix::pty::openpty(Some(&ws), Some(&rfcomm_termios))?;
@@ -86,17 +88,11 @@ pub fn run(child_cmd: &[String]) -> anyhow::Result<std::process::ExitCode> {
             }
             // Acquire controlling terminal
             unsafe { tiocsctty(libc::STDIN_FILENO, 0) }.ok();
-            // Restore default signal handling in child
-            unsafe {
-                nix::sys::signal::signal(
-                    nix::sys::signal::Signal::SIGHUP,
-                    nix::sys::signal::SigHandler::SigDfl,
-                )
-            }
-            .ok();
+            // Restore default signal handling in child: unblock everything
+            // we blocked in the parent.
             nix::sys::signal::sigprocmask(
                 nix::sys::signal::SigmaskHow::SIG_UNBLOCK,
-                Some(&chld_mask),
+                Some(&blocked),
                 None,
             )
             .ok();
@@ -128,12 +124,8 @@ pub fn run(child_cmd: &[String]) -> anyhow::Result<std::process::ExitCode> {
     set_nonblock(libc::STDIN_FILENO)?;
     set_nonblock(master_fd.as_raw_fd())?;
 
-    let exit_code = shuttle(
-        libc::STDIN_FILENO,
-        master_fd.as_raw_fd(),
-        &sig_fd,
-        child_pid,
-    );
+    let rfcomm_borrow = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let exit_code = shuttle(rfcomm_borrow.as_fd(), master_fd.as_fd(), &sig_fd, child_pid);
 
     // Ensure child is reaped.
     let status =
@@ -156,7 +148,7 @@ pub fn run(child_cmd: &[String]) -> anyhow::Result<std::process::ExitCode> {
     }
 }
 
-fn set_nonblock(fd: RawFd) -> anyhow::Result<()> {
+fn set_nonblock(fd: std::os::fd::RawFd) -> anyhow::Result<()> {
     let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL)?;
     let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
     oflags |= nix::fcntl::OFlag::O_NONBLOCK;
@@ -167,13 +159,11 @@ fn set_nonblock(fd: RawFd) -> anyhow::Result<()> {
 /// Bidirectional data shuttle between rfcomm fd and PTY master.
 /// Returns a default exit code (0 for normal exit, 1 for error).
 fn shuttle(
-    rfcomm_fd: RawFd,
-    master_fd: RawFd,
+    rfcomm_fd: BorrowedFd<'_>,
+    master_fd: BorrowedFd<'_>,
     sig_fd: &nix::sys::signalfd::SignalFd,
     child_pid: nix::unistd::Pid,
 ) -> u8 {
-    let rfcomm_borrow = unsafe { BorrowedFd::borrow_raw(rfcomm_fd) };
-    let master_borrow = unsafe { BorrowedFd::borrow_raw(master_fd) };
     let sig_borrow = sig_fd.as_fd();
 
     let mut rfcomm_to_master = Buffer::new();
@@ -194,7 +184,7 @@ fn shuttle(
         let rfcomm_read_idx = if rfcomm_to_master.has_space() && !child_exited {
             let idx = poll_fds.len();
             poll_fds.push(nix::poll::PollFd::new(
-                rfcomm_borrow,
+                rfcomm_fd,
                 nix::poll::PollFlags::POLLIN,
             ));
             Some(idx)
@@ -205,7 +195,7 @@ fn shuttle(
         let master_read_idx = if master_to_rfcomm.has_space() {
             let idx = poll_fds.len();
             poll_fds.push(nix::poll::PollFd::new(
-                master_borrow,
+                master_fd,
                 nix::poll::PollFlags::POLLIN,
             ));
             Some(idx)
@@ -216,7 +206,7 @@ fn shuttle(
         let master_write_idx = if rfcomm_to_master.has_data() {
             let idx = poll_fds.len();
             poll_fds.push(nix::poll::PollFd::new(
-                master_borrow,
+                master_fd,
                 nix::poll::PollFlags::POLLOUT,
             ));
             Some(idx)
@@ -227,7 +217,7 @@ fn shuttle(
         let rfcomm_write_idx = if master_to_rfcomm.has_data() {
             let idx = poll_fds.len();
             poll_fds.push(nix::poll::PollFd::new(
-                rfcomm_borrow,
+                rfcomm_fd,
                 nix::poll::PollFlags::POLLOUT,
             ));
             Some(idx)
@@ -368,7 +358,7 @@ impl Buffer {
         self.len > 0
     }
 
-    fn read_from(&mut self, fd: RawFd) -> ReadResult {
+    fn read_from(&mut self, fd: BorrowedFd<'_>) -> ReadResult {
         // Compact buffer if needed to make contiguous space at the end.
         if self.start > 0 && self.start + self.len >= BUF_SIZE {
             self.data.copy_within(self.start..self.start + self.len, 0);
@@ -379,7 +369,7 @@ impl Buffer {
         if space == 0 {
             return ReadResult::Ok;
         }
-        match nix::unistd::read(fd, &mut self.data[write_pos..write_pos + space]) {
+        match nix::unistd::read(fd.as_raw_fd(), &mut self.data[write_pos..write_pos + space]) {
             Result::Ok(0) => ReadResult::Eof,
             Result::Ok(n) => {
                 self.len += n;
@@ -391,12 +381,12 @@ impl Buffer {
         }
     }
 
-    fn write_to(&mut self, fd: RawFd) {
+    fn write_to(&mut self, fd: BorrowedFd<'_>) {
         if self.len == 0 {
             return;
         }
         let buf = &self.data[self.start..self.start + self.len];
-        match nix::unistd::write(unsafe { BorrowedFd::borrow_raw(fd) }, buf) {
+        match nix::unistd::write(fd, buf) {
             Result::Ok(n) => {
                 self.start += n;
                 self.len -= n;
