@@ -1,10 +1,32 @@
 mod profile;
 mod rfcomm;
+mod session_proxy;
 mod systemd;
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about = "Bluetooth SPP -> serial-getty@ bridge")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Run the Bluetooth getty daemon (default).
+    Serve(ServeArgs),
+
+    /// PTY proxy for a single rfcomm session. Launched by the session
+    /// unit template; not intended for direct use.
+    ///
+    /// Creates a PTY pair, forks the given command (typically agetty)
+    /// on the slave, and shuttles data between stdin (the rfcomm tty
+    /// provided by systemd) and the PTY master. This isolates the
+    /// rfcomm connection from login's vhangup().
+    SessionProxy(SessionProxyArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
     /// Human-readable profile name published in the SDP record.
     #[arg(long, default_value = "Bluetooth getty")]
     name: String,
@@ -22,10 +44,6 @@ struct Args {
     object_path: String,
 
     /// Systemd unit template prefix. `rfcommN.service` is appended.
-    /// Defaults to our own `bluetooth-getty-session@` template, which
-    /// is a near-copy of `serial-getty@.service` with `TTYVHangup=yes`
-    /// removed — that directive would destroy the rfcomm tty before
-    /// agetty could open it.
     #[arg(long, default_value = "bluetooth-getty-session@")]
     unit_template: String,
 
@@ -42,10 +60,51 @@ struct Args {
     require_authorization: bool,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[derive(clap::Args, Debug)]
+struct SessionProxyArgs {
+    /// Command and arguments to exec on the PTY slave (e.g. agetty ...).
+    /// Everything after `--` is passed through.
+    #[arg(trailing_var_arg = true, required = true)]
+    command: Vec<String>,
+}
+
+fn main() -> anyhow::Result<std::process::ExitCode> {
     let args = <Args as clap::Parser>::parse();
 
+    match args.command {
+        Some(Command::SessionProxy(proxy_args)) => crate::session_proxy::run(&proxy_args.command),
+        Some(Command::Serve(serve_args)) => {
+            serve(serve_args)?;
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        None => {
+            // Default to serve when no subcommand given.
+            // Re-parse as ServeArgs to pick up any flags passed without
+            // the explicit `serve` subcommand.
+            let serve_args = ServeArgs::parse_from_serve_defaults();
+            serve(serve_args)?;
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+    }
+}
+
+impl ServeArgs {
+    fn parse_from_serve_defaults() -> Self {
+        Self {
+            name: "Bluetooth getty".to_string(),
+            uuid: "00001101-0000-1000-8000-00805f9b34fb".to_string(),
+            channel: 1,
+            object_path: "/jp/sorah/BluetoothGetty/spp".to_string(),
+            unit_template: "bluetooth-getty-session@".to_string(),
+            bus_name: "jp.sorah.BluetoothGetty".to_string(),
+            require_authentication: false,
+            require_authorization: false,
+        }
+    }
+}
+
+#[tokio::main]
+async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

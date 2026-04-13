@@ -15,7 +15,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 libc = "0.2"
-nix = { version = "0.29", features = ["ioctl", "socket"] }
+nix = { version = "0.29", features = ["fs", "ioctl", "poll", "process", "signal", "socket", "term"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
